@@ -1,12 +1,12 @@
 """
 Main entry point for the Training Ecosystem.
-Implements a multi-threaded GUI for real-time evolutionary training.
+Supports both GUI mode and Headless mode for command-line execution.
 """
 import pygame
+import sys
 import threading
-import time
 import numpy as np
-from src.common.types import Rect, Point
+from src.common.types import Rect
 from src.training.simulator import MouseEnvironment
 from src.training.evaluator import FitnessEvaluator
 from src.training.optimizer import EvolutionaryOptimizer
@@ -23,190 +23,102 @@ COLOR_MENU = (30, 30, 30)
 COLOR_TEXT = (220, 220, 220)
 COLOR_ACCENT = (0, 150, 255)
 COLOR_BTN = (50, 50, 50)
-COLOR_BTN_HOVER = (70, 70, 70)
 
 class TrainingApp:
-    def __init__(self):
-        pygame.init()
-        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Neural Mouse Training Arena")
-        self.clock = pygame.time.Clock()
-        self.font_main = pygame.font.SysFont("Arial", 22)
-        self.font_small = pygame.font.SysFont("Arial", 16)
-        self.font_bold = pygame.font.SysFont("Arial", 24, bold=True)
-
-        # --- Configuration State ---
+    def __init__(self, headless=False):
+        self.headless = headless
         self.config = {
             "cycles": 50,
             "spawning": 10,
             "population": 50,
             "elitism": 0.2,
-            "generations": 100,
+            "generations": 2,
             "threshold": 5.0,
             "max_steps": 50
         }
         
-        # --- Simulation State ---
-        self.state = "MENU"  # MENU, TRAINING, PAUSED
+        self.state = "MENU" 
         self.current_gen = 0
         self.best_fitness = 0.0
         self.optimizer = None
         self.env = None
         self.evaluator = None
         self.processor = None
-        self.visualizer = TrainingVisualizer(ARENA_WIDTH, ARENA_HEIGHT)
-        
-        # --- Threading Control ---
         self.training_thread = None
 
+        if not self.headless:
+            pygame.init()
+            self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+            pygame.display.set_caption("Neural Mouse Training Arena")
+            self.clock = pygame.time.Clock()
+            self.font_main = pygame.font.SysFont("Arial", 22)
+            self.font_small = pygame.font.SysFont("Arial", 16)
+            self.font_bold = pygame.font.SysFont("Arial", 24, bold=True)
+            self.visualizer = TrainingVisualizer(ARENA_WIDTH, ARENA_HEIGHT)
+
     def _evolution_thread_target(self):
-        """The background thread that runs the actual evolution loop."""
+        """Background thread for headless or GUI training."""
         try:
-            # We use a dummy processor for the optimizer's internal logic
-            # In a real setup, this would be the real StateProcessor
-            processor = self.processor
+            # Setup components
+            self.env = MouseEnvironment(width=ARENA_WIDTH, height=ARENA_HEIGHT)
+            self.evaluator = FitnessEvaluator(max_steps=self.config["max_steps"])
+            self.processor = StateProcessor(ARENA_WIDTH, ARENA_HEIGHT)
             
-            # The evolve method is blocking, so it runs here
-            best_ind = self.optimizer.evolve(processor)
+            genome_size = (4 * 10) + 10 + (10 * 10) + 10 + (10 * 5) + 5
             
-            # Once finished, we update the UI
-            self.best_fitness = best_ind.fitness
-            self.state = "MENU"
-            print("Evolution completed successfully.")
+            self.optimizer = EvolutionaryOptimizer(
+                input_size=4, hidden_size=10, output_size=5,
+                env=self.env, evaluator=self.evaluator,
+                pop_size=self.config["population"],
+                spawning=self.config["spawning"]
+            )
+            
+            # Target for training (can be randomized in a real loop)
+            target = Rect(370, 270, 60, 60)
+
+            print("\n[TRAINING] Starting evolution loop...")
+            
+            for gen in range(self.config["generations"]):
+                if self.optimizer.stop_event.is_set():
+                    break
+                
+                # Wait if paused
+                self.optimizer.pause_event.wait()
+                
+                # Run one generation
+                best_ind = self.optimizer.evolve(self.processor)
+                
+                self.current_gen = gen + 1
+                self.best_fitness = best_ind.fitness
+                
+                print(f"[GEN {self.current_gen}] Best Fitness: {self.best_fitness:.4f}")
+
+            print("\n[TRAINING] Process completed.")
+            if not self.headless:
+                self.state = "MENU"
+
         except Exception as e:
-            print(f"Error in training thread: {e}")
+            print(f"\n[ERROR] Training thread failed: {e}")
             self.state = "MENU"
-
-    def _start_training(self):
-        self.env = MouseEnvironment(width=ARENA_WIDTH, height=ARENA_HEIGHT)
-        self.evaluator = FitnessEvaluator(max_steps=self.config["max_steps"])
-        self.processor = StateProcessor(ARENA_WIDTH, ARENA_HEIGHT)
-        
-        genome_size = (4 * 16) + 16 + (16 * 5) + 5
-        
-        self.optimizer = EvolutionaryOptimizer(
-            input_size=4, hidden_size=16, output_size=5,
-            env=self.env, evaluator=self.evaluator,
-            pop_size=self.config["population"],
-            spawning=self.config["spawning"],
-            mutation_rate=0.1,
-            mutation_strength=0.2
-        )
-        
-        self.current_gen = 0
-        self.best_fitness = 0.0
-        self.state = "TRAINING"
-        
-        # Launch the background thread
-        self.training_thread = threading.Thread(target=self._evolution_thread_target, daemon=True)
-        self.training_thread.start()
-
-    def _stop_training(self):
-        if self.optimizer:
-            self.optimizer.stop_event.set()
-            self.optimizer.pause_event.set() # Unpause to allow exit
-        self.state = "MENU"
-
-    def _pause_training(self):
-        if self.optimizer:
-            self.optimizer.pause_event.clear()
-            self.state = "PAUSED"
-
-    def _resume_training(self):
-        if self.optimizer:
-            self.optimizer.pause_event.set()
-            self.state = "TRAINING"
-
-    def _handle_event(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN:
-            pos = event.pos
-            if self.state == "MENU":
-                # Start Button
-                if 440 < pos[1] < 475: self._start_training()
-            elif self.state == "TRAINING":
-                # Pause Button
-                if 440 < pos[1] < 475: self._pause_training()
-                # Reset Button
-                if 480 < pos[1] < 515: self._start_training()
-                # Stop Button
-                if 520 < pos[1] < 555: self._stop_training()
-            elif self.state == "PAUSED":
-                # Resume Button
-                if 440 < pos[1] < 475: self._resume_training()
-                # Reset Button
-                if 480 < pos[1] < 515: self._start_training()
-                # Stop Button
-                if 520 < pos[1] < 555: self._stop_training()
-
-    def _render_menu(self):
-        # Sidebar
-        pygame.draw.rect(self.screen, COLOR_MENU, (0, 0, SIDEBAR_WIDTH, HEIGHT))
-        
-        title = self.font_bold.render("ENVIRONMENT", True, COLOR_ACCENT)
-        self.screen.blit(title, (20, 20))
-        
-        y_offset = 60
-        for key, val in self.config.items():
-            txt = self.font_small.render(f"{key.capitalize()}: {val}", True, COLOR_TEXT)
-            self.screen.blit(txt, (20, y_offset))
-            y_offset += 30
-
-        # Controls
-        ctrl_title = self.font_bold.render("CONTROLS", True, COLOR_ACCENT)
-        self.screen.blit(ctrl_title, (20, 400))
-        
-        buttons = [("START", 440), ("STOP", 520)]
-        for label, y in buttons:
-            pygame.draw.rect(self.screen, COLOR_BTN, (20, y, 150, 35))
-            txt = self.font_small.render(label, True, COLOR_TEXT)
-            self.screen.blit(txt, (35, y + 8))
-
-        # Arena Preview
-        pygame.draw.rect(self.screen, (20, 20, 20), (SIDEBAR_WIDTH + 20, 20, ARENA_WIDTH, ARENA_HEIGHT))
-
-    def _render_training_ui(self):
-        # Sidebar
-        pygame.draw.rect(self.screen, COLOR_MENU, (0, 0, SIDEBAR_WIDTH, HEIGHT))
-        
-        # Nerd Stats
-        stats_title = self.font_bold.render("NERD STATS", True, COLOR_ACCENT)
-        self.screen.blit(stats_title, (20, 20))
-        
-        y_offset = 60
-        stats = [
-            (f"Gen: {self.current_gen}", ""),
-            (f"Best Fit: {self.best_fitness:.4f}", ""),
-            (f"Pop: {self.config['population']}", ""),
-            (f"Spawning: {self.config['spawning']}", ""),
-            (f"Elitism: {self.config['elitism']*100}%", ""),
-            (f"Threshold: {self.config['threshold']}px", "")
-        ]
-        
-        for label, val in stats:
-            txt = self.font_small.render(label, True, COLOR_TEXT)
-            self.screen.blit(txt, (20, y_offset))
-            y_offset += 30
-
-        # Controls
-        ctrl_title = self.font_bold.render("CONTROLS", True, COLOR_ACCENT)
-        self.screen.blit(ctrl_title, (20, 400))
-        
-        buttons = [("PAUSE", 440), ("RESET", 480), ("STOP", 520)]
-        for label, y in buttons:
-            pygame.draw.rect(self.screen, COLOR_BTN, (20, y, 150, 35))
-            txt = self.font_small.render(label, True, COLOR_TEXT)
-            self.screen.blit(txt, (35, y + 8))
-
-        # Arena
-        self.visualizer.render(self.env.target_rect, self.optimizer.get_shared_data(), self.current_gen, self.best_fitness)
-        self.screen.blit(self.visualizer.screen, (SIDEBAR_WIDTH + 20, 20))
 
     def run(self):
+        if self.headless:
+            self._run_headless()
+        else:
+            self._run_gui()
+
+    def _run_headless(self):
+        """Execution loop for console-only mode."""
+        self._evolution_thread_target()
+
+    def _run_gui(self):
+        """Execution loop for Pygame-based GUI mode."""
         running = True
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    self._stop_training()
+                    if self.optimizer:
+                        self.optimizer.stop_event.set()
                     running = False
                 self._handle_event(event)
 
@@ -214,20 +126,84 @@ class TrainingApp:
                 self._render_menu()
             elif self.state == "TRAINING":
                 self._render_training_ui()
-                # In a real implementation, we'd update current_gen from the optimizer
-                # For this skeleton, we'll just increment it to simulate progress
-                # self.current_gen = self.optimizer.current_generation
             elif self.state == "PAUSED":
-                self._render_training_ui()
-                # Overlay Pause text
-                overlay = self.font_bold.render("PAUSED", True, (255, 255, 0))
-                self.screen.blit(overlay, (WIDTH//2 - 40, HEIGHT//2))
+                self._render_paused()
 
             pygame.display.flip()
             self.clock.tick(60)
-
         pygame.quit()
 
+    def _handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            pos = event.pos
+            if self.state == "MENU":
+                if 440 < pos[1] < 475: self._start_training()
+            elif self.state == "TRAINING":
+                if 440 < pos[1] < 475: self.state = "PAUSED"
+                elif 480 < pos[1] < 515: self._start_training()
+                elif 520 < pos[1] < 555: self._stop_training()
+            elif self.state == "PAUSED":
+                if 440 < pos[1] < 475: self.state = "TRAINING"
+                elif 480 < pos[1] < 515: self._start_training()
+                elif 520 < pos[1] < 555: self._stop_training()
+
+    def _start_training(self):
+        self.state = "TRAINING"
+        self.training_thread = threading.Thread(target=self._evolution_thread_target, daemon=True)
+        self.training_thread.start()
+
+    def _stop_training(self):
+        if self.optimizer:
+            self.optimizer.stop_event.set()
+            self.optimizer.pause_event.set()
+        self.state = "MENU"
+
+    def _render_menu(self):
+        self.screen.fill(COLOR_BG)
+        pygame.draw.rect(self.screen, COLOR_MENU, (0, 0, SIDEBAR_WIDTH, HEIGHT))
+        title = self.font_bold.render("ENVIRONMENT", True, COLOR_ACCENT)
+        self.screen.blit(title, (20, 20))
+        y = 60
+        for k, v in self.config.items():
+            txt = self.font_small.render(f"{k.capitalize()}: {v}", True, COLOR_TEXT)
+            self.screen.blit(txt, (20, y))
+            y += 30
+        pygame.draw.rect(self.screen, COLOR_BTN, (20, 440, 150, 35))
+        self.screen.blit(self.font_small.render("START", True, COLOR_TEXT), (35, 448))
+
+    def _render_training_ui(self):
+        self.screen.fill(COLOR_BG)
+        pygame.draw.rect(self.screen, COLOR_MENU, (0, 0, SIDEBAR_WIDTH, HEIGHT))
+        
+        # Stats
+        title = self.font_bold.render("NERD STATS", True, COLOR_ACCENT)
+        self.screen.blit(title, (20, 20))
+        y = 60
+        stats = [f"Gen: {self.current_gen}", f"Best Fit: {self.best_fitness:.4f}", f"Pop: {self.config['population']}"]
+        for s in stats:
+            txt = self.font_small.render(s, True, COLOR_TEXT)
+            self.screen.blit(txt, (20, y))
+            y += 30
+
+        # Controls
+        pygame.draw.rect(self.screen, COLOR_BTN, (20, 440, 150, 35))
+        self.screen.blit(self.font_small.render("PAUSE", True, COLOR_TEXT), (35, 448))
+        pygame.draw.rect(self.screen, COLOR_BTN, (20, 480, 150, 35))
+        self.screen.blit(self.font_small.render("RESET", True, COLOR_TEXT), (35, 488))
+        pygame.draw.rect(self.screen, COLOR_BTN, (20, 520, 150, 35))
+        self.screen.blit(self.font_small.render("STOP", True, COLOR_TEXT), (35, 528))
+
+        # Arena
+        if self.optimizer and self.env:
+            self.visualizer.render(self.env.target_rect, self.optimizer.get_shared_data(), self.current_gen, self.best_fitness)
+        self.screen.blit(self.visualizer.screen, (SIDEBAR_WIDTH + 20, 20))
+
+    def _render_paused(self):
+        self._render_training_ui()
+        overlay = self.font_bold.render("PAUSED", True, (255, 255, 0))
+        self.screen.blit(overlay, (WIDTH//2 - 40, HEIGHT//2))
+
 if __name__ == "__main__":
-    app = TrainingApp()
+    is_headless = "--headless" in sys.argv
+    app = TrainingApp(headless=is_headless)
     app.run()

@@ -62,3 +62,11 @@ class FitnessScore:
     @property
     def total(self) -> float:
         return (self.accuracy * 0.4) + (self.speed * 0.2) + (self.smoothness * 0.2) + (self.anti_detection * 0.2)
+
+@dataclass(frozen=True)
+class AgentState:
+    """
+    Represents the state of the agent at a specific point in time.
+    """
+    position: Point
+    velocity: Point
