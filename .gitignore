@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / cached files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Project Specific
+models/
+*.log
+agent_memory.db
+
+# IDEs and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Distribution / Build
+build/
+dist/
+*.egg-info/
