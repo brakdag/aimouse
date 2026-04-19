@@ -24,33 +24,29 @@ class Rect:
 @dataclass(frozen=True)
 class InputState:
     """
-    The 4-feature input vector for the model:
-    [target_x, target_y, current_x, current_y]
-    All values in range [-1, 1].
+    The 2-feature input vector for the model:
+    [normalized_distance, relative_angle]
+    Both values mapped to [-1, 1].
     """
-    target_x: float
-    target_y: float
-    current_x: float
-    current_y: float
+    distance: float
+    relative_angle: float
 
     def to_array(self) -> np.ndarray:
-        return np.array([self.target_x, self.target_y, self.current_x, self.current_y], dtype=np.float32)
+        return np.array([self.distance, self.relative_angle], dtype=np.float32)
 
 @dataclass(frozen=True)
 class ActionOutput:
     """
-    The 5-feature output vector from the model:
-    [dx_plus, dy_plus, dx_minus, dy_minus, arrived]
-    Values typically in range [0, 1].
+    The 3-feature output vector from the model:
+    [move, rotate, arrived]
+    Values in range [0, 1].
     """
-    dx_plus: float
-    dy_plus: float
-    dx_minus: float
-    dy_minus: float
+    move: float
+    rotate: float
     arrived: float
 
     def to_array(self) -> np.ndarray:
-        return np.array([self.dx_plus, self.dy_plus, self.dx_minus, self.dy_minus, self.arrived], dtype=np.float32)
+        return np.array([self.move, self.rotate, self.arrived], dtype=np.float32)
 
 @dataclass(frozen=True)
 class FitnessScore:
@@ -70,3 +66,4 @@ class AgentState:
     """
     position: Point
     velocity: Point
+    angle: float

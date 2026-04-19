@@ -39,3 +39,7 @@ The engine operates in a high-frequency loop, outputting:
 *   **Organic Kinematics:** Generates movements that mimic human acceleration and deceleration patterns.
 *   **Anti-Detection:** Reduces the footprint of automated interactions by introducing natural jitter and non-linear trajectories.
 *   **Low Latency:** Provides near-instantaneous response to visual feedback through a high-speed tactical loop.
+
+## Development Rules
+
+* **Modularization:** If any file exceeds 10KB, it must be refactored and separated into hierarchical modules to maintain maintainability and prevent "God Files".

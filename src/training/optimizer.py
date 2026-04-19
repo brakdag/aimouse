@@ -1,9 +1,11 @@
 """
 Optimization Engine for the Neural Mouse Interface.
-Implements an Evolutionary Algorithm with a 4-10-10-5 MLP architecture.
+Implements an Evolutionary Algorithm with a 2-5-5-3 MLP architecture.
+Supports batch simulation with a relative angle compass.
 """
 import numpy as np
 import threading
+import time
 from src.common.types import Rect, ActionOutput, AgentState
 from src.training.simulator import MouseEnvironment
 from src.training.evaluator import FitnessEvaluator
@@ -19,22 +21,28 @@ class Individual:
 
 class EvolutionaryOptimizer:
     def __init__(self, 
-                 input_size: int = 4, 
-                 hidden_size: int = 10, 
-                 output_size: int = 5,
+                 input_size: int = 2, 
+                 hidden_layers: list = [5, 5], 
+                 output_size: int = 3,
                  env: MouseEnvironment = None, 
                  evaluator: FitnessEvaluator = None, 
                  pop_size: int = 50, 
                  spawning: int = 10,
                  mutation_rate: float = 0.1, 
-                 mutation_strength: float = 0.2):
+                 mutation_strength: float = 0.2,
+                 fps: int = 0,
+                 elitism: float = 0.2):
         
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.hidden_layers = hidden_layers
         self.output_size = output_size
         
-        # Genome calculation: (in*h1) + h1 + (h1*h2) + h2 + (h2*out) + out
-        self.genome_size = (input_size * hidden_size) + hidden_size + (hidden_size * hidden_size) + hidden_size + (hidden_size * output_size) + output_size
+        self.genome_size = 0
+        prev_size = input_size
+        for h_size in hidden_layers:
+            self.genome_size += (prev_size * h_size) + h_size
+            prev_size = h_size
+        self.genome_size += (prev_size * output_size) + output_size
         
         self.env = env
         self.evaluator = evaluator
@@ -42,6 +50,8 @@ class EvolutionaryOptimizer:
         self.spawning = spawning
         self.mutation_rate = mutation_rate
         self.mutation_strength = mutation_strength
+        self.fps = fps
+        self.elitism = elitism
         self.population = [Individual(self.genome_size) for _ in range(pop_size)]
 
         self.stop_event = threading.Event()
@@ -53,89 +63,98 @@ class EvolutionaryOptimizer:
 
     def _forward_pass(self, weights: np.ndarray, input_vec: np.ndarray) -> ActionOutput:
         idx = 0
+        current_vec = input_vec
+        for h_size in self.hidden_layers:
+            w_end = idx + (current_vec.shape[0] * h_size)
+            w = weights[idx:w_end].reshape((current_vec.shape[0], h_size))
+            idx = w_end
+            b_end = idx + h_size
+            b = weights[idx:b_end]
+            idx = b_end
+            current_vec = np.tanh(np.dot(current_vec, w) + b)
         
-        # Layer 1: Input -> Hidden 1
-        w1_end = idx + (self.input_size * self.hidden_size)
-        w1 = weights[idx:w1_end].reshape((self.input_size, self.hidden_size))
-        idx = w1_end
-        b1_end = idx + self.hidden_size
-        b1 = weights[idx:b1_end]
-        idx = b1_end
-        
-        # Layer 2: Hidden 1 -> Hidden 2
-        w2_end = idx + (self.hidden_size * self.hidden_size)
-        w2 = weights[idx:w2_end].reshape((self.hidden_size, self.hidden_size))
-        idx = w2_end
-        b2_end = idx + self.hidden_size
-        b2 = weights[idx:b2_end]
-        idx = b2_end
-        
-        # Layer 3: Hidden 2 -> Output
-        w3_end = idx + (self.hidden_size * self.output_size)
-        w3 = weights[idx:w3_end].reshape((self.hidden_size, self.output_size))
-        idx = w3_end
-        b3_end = idx + self.output_size
-        b3 = weights[idx:b3_end]
-
-        # Computation with Tanh for hidden layers
-        h1 = np.tanh(np.dot(input_vec, w1) + b1)
-        h2 = np.tanh(np.dot(h1, w2) + b2)
-        
-        # Computation with Sigmoid for output layer
-        # Sigmoid(x) = 1 / (1 + exp(-x))
-        out = 1.0 / (1.0 + np.exp(-np.dot(h2, w3) + b3))
+        w_end = idx + (current_vec.shape[0] * self.output_size)
+        w_out = weights[idx:w_end].reshape((current_vec.shape[0], self.output_size))
+        idx = w_end
+        b_end = idx + self.output_size
+        b_out = weights[idx:b_end]
+        out = 1.0 / (1.0 + np.exp(-np.dot(current_vec, w_out) + b_out))
         
         return ActionOutput(
-            dx_plus=float(out[0]),
-            dy_plus=float(out[1]),
-            dx_minus=float(out[2]),
-            dy_minus=float(out[3]),
-            arrived=float(out[4])
+            move=float(out[0]),
+            rotate=float(out[1]),
+            arrived=float(out[2])
         )
 
-    def _run_single_trial(self, individual: Individual, processor) -> tuple[float, list[AgentState]]:
-        from src.common.types import Rect
-        target_rect = Rect(370, 270, 60, 60) 
-        self.env.target_rect = target_rect
+    def _run_batch_trial(self, processor, max_steps: int) -> list[float]:
+        target_rect = self.env.reset_target()
+        start_state = self.env.reset_agent()
+        agent_states = [start_state for _ in range(self.pop_size)]
         
-        state, _ = self.env.reset()
-        trajectory = [state]
-        
-        done = False
-        while not done:
+        trajectories = [[] for _ in range(self.pop_size)]
+        dones = [False] * self.pop_size
+
+        for step in range(max_steps):
             self.pause_event.wait()
             if self.stop_event.is_set():
                 break
 
-            input_state = processor.process(target_rect, state.position)
-            action = self._forward_pass(individual.weights, input_state.to_array())
-            state, reward, done = self.env.step(action)
-            trajectory.append(state)
-            
-            with self._data_lock:
-                self.shared_agent_data = [(state, 0.5)]
-            
-        return self.evaluator.evaluate(trajectory, target_rect, self.env.steps_taken).total, trajectory
+            current_batch_data = []
 
-    def evolve(self, processor) -> Individual:
+            for i in range(self.pop_size):
+                if dones[i]:
+                    current_batch_data.append((agent_states[i], 0.5))
+                    continue
+
+                # Pass the whole agent state to get the relative angle
+                input_state = processor.process(target_rect, agent_states[i])
+                
+                action = self._forward_pass(self.population[i].weights, input_state.to_array())
+                
+                new_state, reward, done = self.env.step(agent_states[i], action)
+                
+                agent_states[i] = new_state
+                trajectories[i].append(new_state)
+                dones[i] = done
+                current_batch_data.append((new_state, 0.5))
+
+            with self._data_lock:
+                self.shared_agent_data = current_batch_data
+            
+            if self.fps > 0:
+                time.sleep(1.0 / self.fps)
+
+        fitnesses = []
+        for i in range(self.pop_size):
+            steps_taken = len(trajectories[i])
+            if not dones[i]:
+                steps_taken = max_steps
+            f = self.evaluator.evaluate(trajectories[i], target_rect, steps_taken).total
+            fitnesses.append(f)
+            
+        return fitnesses
+
+    def evolve(self, processor, num_generations: int, progress_callback=None) -> Individual:
         self.stop_event.clear()
         self.pause_event.set()
+        max_steps = getattr(self.evaluator, 'max_steps', 50)
 
-        for gen in range(1000):
+        for gen in range(num_generations):
             if self.stop_event.is_set():
                 break
 
-            for ind in self.population:
-                # Spawning: Average fitness over N trials
-                trial_fitnesses = []
-                for _ in range(self.spawning):
-                    f, _ = self._run_single_trial(ind, processor)
-                    trial_fitnesses.append(f)
-                ind.fitness = np.mean(trial_fitnesses)
+            total_fitnesses = np.zeros(self.pop_size)
+            for _ in range(self.spawning):
+                batch_fitnesses = self._run_batch_trial(processor, max_steps)
+                total_fitnesses += np.array(batch_fitnesses)
+            
+            for i in range(self.pop_size):
+                self.population[i].fitness = total_fitnesses[i] / self.spawning
             
             self.population.sort(key=lambda x: x.fitness, reverse=True)
             
-            new_population = self.population[:max(1, self.pop_size // 10)]
+            elite_count = max(1, int(self.pop_size * self.elitism))
+            new_population = self.population[:elite_count]
 
             while len(new_population) < self.pop_size:
                 p1 = self._tournament_selection()
@@ -145,6 +164,9 @@ class EvolutionaryOptimizer:
                 new_population.append(Individual(self.genome_size, child_w))
             
             self.population = new_population
+            
+            if progress_callback:
+                progress_callback(gen + 1, self.population[0].fitness)
 
         return self.population[0]
 
@@ -165,3 +187,14 @@ class EvolutionaryOptimizer:
     def get_shared_data(self):
         with self._data_lock:
             return list(self.shared_agent_data)
+
+    def get_best_weights(self) -> np.ndarray:
+        if not self.population:
+            return None
+        best = max(self.population, key=lambda x: x.fitness)
+        return best.weights
+
+    def inject_elite_weights(self, weights: np.ndarray):
+        if len(weights) != self.genome_size:
+            raise ValueError(f"Weight size mismatch. Expected {self.genome_size}, got {len(weights)}")
+        self.population[0] = Individual(self.genome_size, weights)

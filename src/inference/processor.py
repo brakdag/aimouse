@@ -1,52 +1,48 @@
 """
 State Processor for the Inference Engine.
-Handles normalization of spatial coordinates to the [-1, 1] range.
+Handles normalization of distance and relative angle for the agent.
 """
 import numpy as np
+import math
 from src.common.types import Point, Rect, InputState
 
 class StateProcessor:
     def __init__(self, canvas_width: int, canvas_height: int):
         self.width = canvas_width
         self.height = canvas_height
-        self.center_x = canvas_width / 2
-        self.center_y = canvas_height / 2
-        self.half_w = self.center_x
-        self.half_h = self.center_y
+        self.max_diagonal = np.sqrt(canvas_width**2 + canvas_height**2)
 
-    def normalize_coordinate(self, x: float, y: float) -> tuple[float, float]:
-        """Converts pixel coordinates to [-1, 1] range.
-        
-        Args:
-            x: Pixel X coordinate.
-            y: Pixel Y coordinate.
-            
-        Returns:
-            Tuple of (norm_x, norm_y).
+    def process(self, target_rect: Rect, agent_state: 'AgentState') -> InputState:
         """
-        norm_x = (x - self.center_x) / self.half_w
-        norm_y = (y - self.center_y) / self.half_h
-        # Clip to ensure strict adherence to range due to float precision
-        return float(np.clip(norm_x, -1.0, 1.0)), float(np.clip(norm_y, -1.0, 1.0))
-
-    def process(self, target_rect: Rect, current_pos: Point) -> InputState:
-        """Transforms raw spatial data into the 4-feature InputState.
+        Transforms raw spatial data into a distance and relative angle pair.
         
         Args:
             target_rect: The target rectangle.
-            current_pos: The current cursor position in pixels.
+            agent_state: The current state of the agent (including angle).
             
         Returns:
-            An InputState object with normalized values.
+            An InputState object with normalized distance and relative angle.
         """
         target_center = target_rect.center
+        pos = agent_state.position
         
-        norm_target_x, norm_target_y = self.normalize_coordinate(target_center.x, target_center.y)
-        norm_curr_x, norm_curr_y = self.normalize_coordinate(current_pos.x, current_pos.y)
+        # 1. Distance Calculation
+        dist = np.sqrt((target_center.x - pos.x)**2 + (target_center.y - pos.y)**2)
+        norm_dist = float(np.clip(dist / self.max_diagonal, 0.0, 1.0))
+        # Map [0, 1] -> [-1, 1]
+        mapped_dist = (norm_dist * 2.0) - 1.0
         
-        return InputState(
-            target_x=norm_target_x,
-            target_y=norm_target_y,
-            current_x=norm_curr_x,
-            current_y=norm_curr_y
-        )
+        # 2. Relative Angle Calculation
+        # Angle from agent to target
+        angle_to_target = math.atan2(target_center.y - pos.y, target_center.x - pos.x)
+        
+        # Difference between target angle and agent's current facing angle
+        rel_angle = angle_to_target - agent_state.angle
+        
+        # Normalize angle to be within [-pi, pi]
+        rel_angle = (rel_angle + math.pi) % (2 * math.pi) - math.pi
+        
+        # Map [-pi, pi] -> [-1, 1]
+        mapped_angle = rel_angle / math.pi
+        
+        return InputState(distance=mapped_dist, relative_angle=mapped_angle)
