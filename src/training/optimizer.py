@@ -113,7 +113,7 @@ class EvolutionaryOptimizer:
             trajectory.append(state)
             
             with self._data_lock:
-                self.shared_agent_data = [(state.position, 0.5)]
+                self.shared_agent_data = [(state, 0.5)]
             
         return self.evaluator.evaluate(trajectory, target_rect, self.env.steps_taken).total, trajectory
 
