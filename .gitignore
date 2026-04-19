@@ -24,3 +24,5 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
+.chat_history
+.paser_quota.json
