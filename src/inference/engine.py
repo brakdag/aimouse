@@ -74,7 +74,8 @@ class InferenceEngine:
             self.actuator.execute(action)
             
             if action.arrived > 0.8:
-                print(f"Target reached at step {step} (Model signal).")
+                print(f"Target reached at step {step}. Executing click.")
+                self.actuator.click()
                 return True
             
         print("Task timed out.")

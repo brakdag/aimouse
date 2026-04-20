@@ -22,6 +22,8 @@ dependencies = [
     "pynput",
     "opencv-python",
     "pygame",
+    "Pillow",
+    "mss",
 ] 
 
 [tool.pytest.ini_options]

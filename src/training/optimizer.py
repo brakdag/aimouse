@@ -103,10 +103,11 @@ class EvolutionaryOptimizer:
 
             for i in range(self.pop_size):
                 if dones[i]:
-                    current_batch_data.append((agent_states[i], 0.5))
+                    # Use a dummy action to keep the 'arrived' signal for visualization
+                    # We'll store the last action taken
+                    current_batch_data.append((agent_states[i], 0.5, 0.0))
                     continue
 
-                # Pass the whole agent state to get the relative angle
                 input_state = processor.process(target_rect, agent_states[i])
                 
                 action = self._forward_pass(self.population[i].weights, input_state.to_array())
@@ -116,7 +117,8 @@ class EvolutionaryOptimizer:
                 agent_states[i] = new_state
                 trajectories[i].append(new_state)
                 dones[i] = done
-                current_batch_data.append((new_state, 0.5))
+                # Store state, alpha, and the 'arrived' signal
+                current_batch_data.append((new_state, 0.5, action.arrived))
 
             with self._data_lock:
                 self.shared_agent_data = current_batch_data

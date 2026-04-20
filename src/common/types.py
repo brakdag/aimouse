@@ -67,3 +67,5 @@ class AgentState:
     position: Point
     velocity: Point
     angle: float
+    has_fired: bool = False
+    won: bool = False
